@@ -334,6 +334,7 @@ struct ContentView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
             detector.selectedGuitarStringIndex = Double(next)
             targetDragProgress = 0
+            detector.playSelectedTargetTone()
 
             isChangingTarget = false
         }

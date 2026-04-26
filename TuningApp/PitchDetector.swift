@@ -58,8 +58,12 @@ final class PitchDetector: ObservableObject {
     @Published var selectedGuitarStringIndex: Double = 0
 
     private let audioEngine = AVAudioEngine()
+    private let toneEngine = AVAudioEngine()
+    private let tonePlayer = AVAudioPlayerNode()
     private let analysisQueue = DispatchQueue(label: "PitchDetectorAnalysis")
     private var hasPermission = false
+    private var isTonePlayerAttached = false
+    private var isToneEngineConfigured = false
     private var recentFrequencies: [Double] = []
     private var lastStableFrequency: Double?
     private var smoothingWindowSize: Int {
@@ -181,6 +185,11 @@ final class PitchDetector: ObservableObject {
         tuningStatus = "停止中"
     }
 
+    func playSelectedTargetTone() {
+        guard tuningMode == .guitarStandard, let target = selectedGuitarTarget else { return }
+        playTone(frequency: target.frequency)
+    }
+
     private func configureAudioSession() throws {
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
@@ -188,6 +197,57 @@ final class PitchDetector: ObservableObject {
         try? session.setPreferredInputNumberOfChannels(1)
         try? session.setPreferredIOBufferDuration(0.046)
         try session.setActive(true, options: .notifyOthersOnDeactivation)
+    }
+
+    private func playTone(frequency: Double) {
+        do {
+            try configureAudioSession()
+            let format = try configureToneEngine()
+
+            let sampleRate = format.sampleRate
+            let samples = ToneGenerator.tuningForkTone(frequency: frequency, sampleRate: sampleRate)
+            let frameCount = AVAudioFrameCount(samples.count)
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
+            buffer.frameLength = frameCount
+
+            guard let channel = buffer.floatChannelData?[0] else { return }
+            for frame in samples.indices {
+                channel[frame] = samples[frame]
+            }
+
+            tonePlayer.scheduleBuffer(buffer, at: nil, options: [])
+            if !tonePlayer.isPlaying {
+                tonePlayer.play()
+            }
+        } catch {
+            tuningStatus = "再生失敗: \(error.localizedDescription)"
+        }
+    }
+
+    private func configureToneEngine() throws -> AVAudioFormat {
+        let sampleRate = 44_100.0
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1) else {
+            throw NSError(domain: "TuningApp", code: 1, userInfo: [NSLocalizedDescriptionKey: "再生フォーマットを作成できません"])
+        }
+
+        if !isTonePlayerAttached {
+            toneEngine.attach(tonePlayer)
+            isTonePlayerAttached = true
+        }
+
+        if !isToneEngineConfigured {
+            toneEngine.connect(tonePlayer, to: toneEngine.mainMixerNode, format: format)
+            tonePlayer.volume = 1.0
+            toneEngine.mainMixerNode.outputVolume = 1.0
+            isToneEngineConfigured = true
+        }
+
+        if !toneEngine.isRunning {
+            toneEngine.prepare()
+            try toneEngine.start()
+        }
+
+        return format
     }
 
     private func applyAnalysisSnapshot(_ snapshot: AnalysisSnapshot) {
